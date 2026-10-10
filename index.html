@@ -96,16 +96,57 @@ function draw(it, cv, side){
   x.drawImage(it.cut, cx - cw / 2, cy - ch / 2, cw, ch, 0, 0, W, H);
 }
 
+// Réduit la photo avant détourage : le modèle travaille en ~1024 px de toute façon,
+// et une photo de téléphone en pleine résolution sature la mémoire (blocage vers 80 %).
+async function shrink(file, maxSide){
+  const bm = await createImageBitmap(file); // respecte l'orientation EXIF
+  const k = Math.min(1, maxSide / Math.max(bm.width, bm.height));
+  const w = Math.max(1, Math.round(bm.width * k)), h = Math.max(1, Math.round(bm.height * k));
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  c.getContext('2d').drawImage(bm, 0, 0, w, h);
+  bm.close && bm.close();
+  const blob = await new Promise(r => c.toBlob(r, 'image/png'));
+  c.width = c.height = 0; // libère la mémoire du canvas
+  return blob;
+}
+
+function withTimeout(p, ms){
+  let t;
+  const timeout = new Promise((_, rej) => { t = setTimeout(() => rej(new Error('délai dépassé (' + Math.round(ms / 1000) + ' s)')), ms); });
+  return Promise.race([p, timeout]).finally(() => clearTimeout(t));
+}
+
+async function runModel(it, maxSide){
+  const input = await shrink(it.file, maxSide);
+  const config = {
+    output: { format: 'image/png' },
+    progress: (key, cur, total) => {
+      if (!total) return;
+      const pct = Math.round(cur / total * 100);
+      it.st.textContent = key.startsWith('fetch')
+        ? 'Chargement du modèle… ' + pct + ' %'
+        : 'Détourage en cours…';
+    }
+  };
+  return withTimeout(removeBackground(input, config), 180000);
+}
+
 async function cutout(it){
   it.busy = true; it.st.textContent = 'Détourage en cours…';
   try {
-    const blob = await removeBackground(it.file, { output: { format: 'image/png' } });
+    let blob;
+    try { blob = await runModel(it, 1600); }
+    catch (e1) {
+      console.warn('Premier essai échoué, nouvel essai en plus petit :', e1);
+      it.st.textContent = 'Nouvel essai en résolution réduite…';
+      blob = await runModel(it, 900);
+    }
     it.cut = await createImageBitmap(blob);
     it.bbox = bbox(it.cut);
     it.st.textContent = 'Prêt';
     draw(it, it.cv, 400);
   } catch (e) {
-    it.st.textContent = 'Échec du détourage : ' + e.message;
+    it.st.textContent = 'Échec du détourage : ' + (e && e.message || e);
     console.error(e);
   }
   it.busy = false; refreshBtn();
@@ -117,8 +158,14 @@ async function add(files){
     const it = { file: f, name: f.name.replace(/\.[^.]+$/, '') };
     buildCard(it); items.push(it);
   }
-  for (const it of [...items]) if (!it.cut && !it.busy && !it.tried) { it.tried = true; await cutout(it); }
+  if (queueRunning) return; // une seule boucle à la fois (évite la saturation mémoire)
+  queueRunning = true;
+  try {
+    let next;
+    while ((next = items.find(i => !i.cut && !i.busy && !i.tried))) { next.tried = true; await cutout(next); }
+  } finally { queueRunning = false; }
 }
+let queueRunning = false;
 
 const drop = $('drop');
 drop.onclick = () => $('file').click();
