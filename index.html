@@ -74,11 +74,12 @@ function bbox(bm){
   const c = document.createElement('canvas'); c.width = w; c.height = h;
   const x = c.getContext('2d', { willReadFrequently: true }); x.drawImage(bm, 0, 0);
   const d = x.getImageData(0, 0, w, h).data;
-  let x0 = w, y0 = h, x1 = -1, y1 = -1;
+  let x0 = w, y0 = h, x1 = -1, y1 = -1, n = 0;
   for (let y = 0; y < h; y++) for (let i = 0; i < w; i++) {
-    if (d[(y * w + i) * 4 + 3] > 20) { if (i < x0) x0 = i; if (i > x1) x1 = i; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+    if (d[(y * w + i) * 4 + 3] > 20) { n++; if (i < x0) x0 = i; if (i > x1) x1 = i; if (y < y0) y0 = y; if (y > y1) y1 = y; }
   }
-  return x1 < x0 ? { x: 0, y: 0, w, h } : { x: x0, y: y0, w: x1 - x0 + 1, h: y1 - y0 + 1 };
+  const cover = n / (w * h);
+  return x1 < x0 ? { x: 0, y: 0, w, h, cover: 0 } : { x: x0, y: y0, w: x1 - x0 + 1, h: y1 - y0 + 1, cover };
 }
 
 function draw(it, cv, side){
@@ -116,9 +117,10 @@ function withTimeout(p, ms){
   return Promise.race([p, timeout]).finally(() => clearTimeout(t));
 }
 
-async function runModel(it, maxSide){
+async function runModel(it, maxSide, model){
   const input = await shrink(it.file, maxSide);
   const config = {
+    model,
     output: { format: 'image/png' },
     progress: (key, cur, total) => {
       if (!total) return;
@@ -131,24 +133,32 @@ async function runModel(it, maxSide){
   return withTimeout(removeBackground(input, config), 180000);
 }
 
+// Modèles essayés dans l'ordre. La variante fp16 donne des résultats vides sur Safari/iPad.
+const ATTEMPTS = [['isnet', 1600], ['isnet_quint8', 1600], ['isnet', 900], ['isnet_fp16', 1200]];
+
 async function cutout(it){
   it.busy = true; it.st.textContent = 'Détourage en cours…';
-  try {
-    let blob;
-    try { blob = await runModel(it, 1600); }
-    catch (e1) {
-      console.warn('Premier essai échoué, nouvel essai en plus petit :', e1);
-      it.st.textContent = 'Nouvel essai en résolution réduite…';
-      blob = await runModel(it, 900);
+  let lastErr = null, fallback = null;
+  for (let a = 0; a < ATTEMPTS.length; a++) {
+    const [model, side] = ATTEMPTS[a];
+    try {
+      if (a > 0) it.st.textContent = 'Nouvel essai (' + a + '/' + (ATTEMPTS.length - 1) + ')…';
+      const blob = await runModel(it, side, model);
+      const bm = await createImageBitmap(blob);
+      const bb = bbox(bm);
+      // Résultat valide : un sujet existe (>1 % opaque) et le fond a bien été retiré (<98 % opaque)
+      if (bb.cover > 0.01 && bb.cover < 0.98) { it.cut = bm; it.bbox = bb; fallback = null; break; }
+      console.warn('Résultat inutilisable avec', model, side, 'couverture =', bb.cover);
+      if (bb.cover >= 0.98 && !fallback) fallback = { bm, bb }; else bm.close && bm.close();
+      lastErr = new Error('le modèle n\'a rien détecté');
+    } catch (e) {
+      console.warn('Essai échoué', model, side, e);
+      lastErr = e;
     }
-    it.cut = await createImageBitmap(blob);
-    it.bbox = bbox(it.cut);
-    it.st.textContent = 'Prêt';
-    draw(it, it.cv, 400);
-  } catch (e) {
-    it.st.textContent = 'Échec du détourage : ' + (e && e.message || e);
-    console.error(e);
   }
+  if (!it.cut && fallback) { it.cut = fallback.bm; it.bbox = fallback.bb; } // mieux que rien : photo non détourée
+  if (it.cut) { it.st.textContent = 'Prêt'; draw(it, it.cv, 400); }
+  else { it.st.textContent = 'Échec du détourage : ' + (lastErr && lastErr.message || lastErr); }
   it.busy = false; refreshBtn();
 }
 
