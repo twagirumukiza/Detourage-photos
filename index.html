@@ -32,7 +32,7 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
 </head>
 <body>
 <main>
-<h1>Détourage de photos <small style="font-size:.5em;color:var(--mut);font-weight:400">v3</small></h1>
+<h1>Détourage de photos <small style="font-size:.5em;color:var(--mut);font-weight:400">v4</small></h1>
 <p class="s">Supprime le fond, recadre autour du sujet, applique la couleur de ton choix et télécharge un zip de photos renommées. Tout se passe sur ton ordinateur.</p>
 
 <div class="card" id="drop" tabindex="0">Dépose tes photos ici ou clique pour les choisir
@@ -59,7 +59,7 @@ const $ = id => document.getElementById(id);
 const dbg = m => { $('dbg').textContent += m + '\n'; };
 window.addEventListener('error', e => dbg('Erreur : ' + e.message));
 window.addEventListener('unhandledrejection', e => dbg('Erreur (promesse) : ' + (e.reason && e.reason.message || e.reason)));
-dbg('Page v3 chargée');
+dbg('Page v4 chargée');
 const items = [];
 
 function refreshBtn(){ $('go').disabled = !items.some(i => i.cut); }
@@ -99,7 +99,14 @@ function draw(it, cv, side){
   const x = cv.getContext('2d');
   if ($('transp').value !== '1') { x.fillStyle = $('color').value; x.fillRect(0, 0, W, H); }
   x.imageSmoothingQuality = 'high';
-  x.drawImage(it.cut, cx - cw / 2, cy - ch / 2, cw, ch, 0, 0, W, H);
+  // Recadrage borné à l'image (une zone source hors limites peut ne rien dessiner selon le navigateur)
+  const src = it.src || it.cut, iw = src.width, ih = src.height;
+  const sx0 = cx - cw / 2, sy0 = cy - ch / 2;
+  const ix0 = Math.max(0, sx0), iy0 = Math.max(0, sy0), ix1 = Math.min(iw, sx0 + cw), iy1 = Math.min(ih, sy0 + ch);
+  if (ix1 > ix0 && iy1 > iy0) {
+    x.drawImage(src, ix0, iy0, ix1 - ix0, iy1 - iy0,
+      (ix0 - sx0) * W / cw, (iy0 - sy0) * H / ch, (ix1 - ix0) * W / cw, (iy1 - iy0) * H / ch);
+  } else dbg('Recadrage vide : bbox ' + JSON.stringify(it.bbox) + ' image ' + iw + '×' + ih);
 }
 
 // Réduit la photo avant détourage : le modèle travaille en ~1024 px de toute façon,
@@ -164,6 +171,11 @@ async function cutout(it){
     }
   }
   if (!it.cut && fallback) { it.cut = fallback.bm; it.bbox = fallback.bb; } // mieux que rien : photo non détourée
+  if (it.cut) {
+    const sc = document.createElement('canvas'); sc.width = it.cut.width; sc.height = it.cut.height;
+    sc.getContext('2d').drawImage(it.cut, 0, 0); it.src = sc;
+    dbg(it.name + ' : image ' + sc.width + '×' + sc.height + ', bbox ' + it.bbox.x + ',' + it.bbox.y + ' ' + it.bbox.w + '×' + it.bbox.h);
+  }
   if (it.cut) { it.st.textContent = 'Prêt' + (it.info ? ' · ' + it.info : ' · non détouré'); draw(it, it.cv, 400); }
   else { it.st.textContent = 'Échec du détourage : ' + (lastErr && lastErr.message || lastErr); }
   it.busy = false; refreshBtn();
