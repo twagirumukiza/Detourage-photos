@@ -32,7 +32,7 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
 </head>
 <body>
 <main>
-<h1>Détourage de photos</h1>
+<h1>Détourage de photos <small style="font-size:.5em;color:var(--mut);font-weight:400">v3</small></h1>
 <p class="s">Supprime le fond, recadre autour du sujet, applique la couleur de ton choix et télécharge un zip de photos renommées. Tout se passe sur ton ordinateur.</p>
 
 <div class="card" id="drop" tabindex="0">Dépose tes photos ici ou clique pour les choisir
@@ -48,6 +48,7 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
 </div>
 
 <div class="card"><button id="go" disabled>Télécharger le zip</button> <span id="msg" class="st"></span></div>
+<pre id="dbg" style="white-space:pre-wrap;font-size:.75rem;color:#b00020;margin:0 0 12px"></pre>
 <div id="grid"></div>
 </main>
 
@@ -55,6 +56,10 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
 <script type="module">
 import { removeBackground } from "https://cdn.jsdelivr.net/npm/@imgly/background-removal@1.5.5/+esm";
 const $ = id => document.getElementById(id);
+const dbg = m => { $('dbg').textContent += m + '\n'; };
+window.addEventListener('error', e => dbg('Erreur : ' + e.message));
+window.addEventListener('unhandledrejection', e => dbg('Erreur (promesse) : ' + (e.reason && e.reason.message || e.reason)));
+dbg('Page v3 chargée');
 const items = [];
 
 function refreshBtn(){ $('go').disabled = !items.some(i => i.cut); }
@@ -147,17 +152,19 @@ async function cutout(it){
       const bm = await createImageBitmap(blob);
       const bb = bbox(bm);
       // Résultat valide : un sujet existe (>1 % opaque) et le fond a bien été retiré (<98 % opaque)
-      if (bb.cover > 0.01 && bb.cover < 0.98) { it.cut = bm; it.bbox = bb; fallback = null; break; }
+      if (bb.cover > 0.01 && bb.cover < 0.98) { it.cut = bm; it.bbox = bb; it.info = model + ' ' + side + 'px, sujet ' + Math.round(bb.cover * 100) + ' %'; fallback = null; break; }
       console.warn('Résultat inutilisable avec', model, side, 'couverture =', bb.cover);
+      dbg(it.name + ' : ' + model + ' ' + side + 'px → sujet ' + Math.round(bb.cover * 100) + ' % (' + bm.width + '×' + bm.height + ') : refusé');
       if (bb.cover >= 0.98 && !fallback) fallback = { bm, bb }; else bm.close && bm.close();
       lastErr = new Error('le modèle n\'a rien détecté');
     } catch (e) {
       console.warn('Essai échoué', model, side, e);
+      dbg(it.name + ' : ' + model + ' ' + side + 'px → erreur : ' + (e && e.message || e));
       lastErr = e;
     }
   }
   if (!it.cut && fallback) { it.cut = fallback.bm; it.bbox = fallback.bb; } // mieux que rien : photo non détourée
-  if (it.cut) { it.st.textContent = 'Prêt'; draw(it, it.cv, 400); }
+  if (it.cut) { it.st.textContent = 'Prêt' + (it.info ? ' · ' + it.info : ' · non détouré'); draw(it, it.cv, 400); }
   else { it.st.textContent = 'Échec du détourage : ' + (lastErr && lastErr.message || lastErr); }
   it.busy = false; refreshBtn();
 }
